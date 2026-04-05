@@ -24,6 +24,8 @@ final class ModelManager: ObservableObject {
     /// 모델별 에러 메시지
     @Published var modelErrors: [String: String] = [:]
     @Published var mlxAudioDownloadState: ModelState = .notDownloaded
+    /// WhisperKit 모델별 캐시 상태 (모델 ID → 다운로드 여부)
+    @Published var whisperModelCacheStates: [String: Bool] = [:]
 
     private static let cacheStatesKey = "WhispreeModelCacheStates"
 
@@ -107,10 +109,37 @@ final class ModelManager: ObservableObject {
             mlxAudioDownloadState = .ready
         }
 
+        // WhisperKit 모델별 캐시 상태 확인
+        for model in ModelInfo.availableWhisperModels {
+            whisperModelCacheStates[model.id] = isWhisperModelCached(modelId: model.id)
+        }
+
         // LLM 모델
         for spec in LocalModelSpec.supported {
             modelCacheStates[spec.id] = (modelCacheStates[spec.id] ?? false) || isModelCached(repoId: spec.id)
         }
+    }
+
+    private func isWhisperModelCached(modelId: String) -> Bool {
+        let fm = FileManager.default
+        // WhisperKit은 ~/Library/Caches/com.apple.whisperkit 하위에 모델 저장
+        let whisperKitCache = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/com.apple.whisperkit")
+        if let contents = try? fm.contentsOfDirectory(atPath: whisperKitCache.path) {
+            if contents.contains(where: { $0.contains(modelId) }) { return true }
+        }
+        // HuggingFace 캐시도 확인
+        let hfCache = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub/models--argmaxinc--whisperkit-coreml")
+        if fm.fileExists(atPath: hfCache.appendingPathComponent("snapshots").path) {
+            if let snapshots = try? fm.contentsOfDirectory(atPath: hfCache.appendingPathComponent("snapshots").path) {
+                for snapshot in snapshots {
+                    let modelDir = hfCache.appendingPathComponent("snapshots/\(snapshot)/\(modelId)")
+                    if fm.fileExists(atPath: modelDir.path) { return true }
+                }
+            }
+        }
+        return false
     }
 
     func isLLMModelCached(_ modelId: String) -> Bool {
@@ -173,14 +202,33 @@ final class ModelManager: ObservableObject {
 
     // MARK: - STT 다운로드
 
-    func downloadWhisperKitModel() async {
+    func downloadWhisperKitModel(modelId: String? = nil) async {
+        let targetModelId = modelId ?? appState.settings.whisperModelId
         let originalType = appState.settings.sttProviderType
+        let originalModelId = appState.settings.whisperModelId
         isWhisperKitDownloading = true
 
-        await appState.switchSTTProvider(to: .whisperKit)
-        modelCacheStates[Self.whisperKitRepoId] = true
+        // 다운로드할 모델로 임시 전환
+        appState.settings.whisperModelId = targetModelId
+        appState.settings.save()
 
-        if originalType != .whisperKit {
+        await appState.switchSTTProvider(to: .whisperKit)
+
+        if appState.whisperModelState.isReady {
+            modelCacheStates[Self.whisperKitRepoId] = true
+            whisperModelCacheStates[targetModelId] = true
+        }
+
+        // 원래 설정으로 복원 (다른 모델을 다운로드만 한 경우)
+        if targetModelId != originalModelId && modelId != nil {
+            appState.settings.whisperModelId = originalModelId
+            appState.settings.save()
+            if originalType != .whisperKit {
+                await appState.switchSTTProvider(to: originalType)
+            } else {
+                await appState.switchSTTProvider(to: .whisperKit)
+            }
+        } else if originalType != .whisperKit {
             await appState.switchSTTProvider(to: originalType)
         }
         isWhisperKitDownloading = false
@@ -249,13 +297,21 @@ final class ModelManager: ObservableObject {
 
     // MARK: - 삭제
 
-    func deleteWhisperModel() {
-        sttService.unloadModel()
-        Task { await appState.sttProvider?.teardown() }
-        appState.sttProvider = nil
-        whisperModelInfo.state = .notDownloaded
-        appState.whisperModelState = .notDownloaded
-        modelCacheStates[Self.whisperKitRepoId] = false
+    func deleteWhisperModel(modelId: String? = nil) {
+        let targetModelId = modelId ?? appState.settings.whisperModelId
+        // 현재 사용 중인 모델을 삭제하는 경우 provider teardown
+        if targetModelId == appState.settings.whisperModelId {
+            sttService.unloadModel()
+            Task { await appState.sttProvider?.teardown() }
+            appState.sttProvider = nil
+            whisperModelInfo.state = .notDownloaded
+            appState.whisperModelState = .notDownloaded
+        }
+        whisperModelCacheStates[targetModelId] = false
+        // 남은 WhisperKit 모델이 없으면 전체 캐시 상태도 false
+        if whisperModelCacheStates.values.allSatisfy({ !$0 }) {
+            modelCacheStates[Self.whisperKitRepoId] = false
+        }
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("huggingface")
         try? FileManager.default.removeItem(at: cacheDir)

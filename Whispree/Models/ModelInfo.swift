@@ -23,6 +23,20 @@ struct ModelInfo: Identifiable {
         huggingFaceRepo: "argmaxinc/whisperkit-coreml"
     )
 
+    static let whisperLargeV3 = ModelInfo(
+        id: "openai_whisper-large-v3",
+        name: "Whisper Large V3",
+        description: String(localized: "Highest accuracy STT model (slower, ~3 GB)"),
+        sizeBytes: 3_100_000_000,
+        huggingFaceRepo: "argmaxinc/whisperkit-coreml"
+    )
+
+    /// WhisperKit에서 선택 가능한 모델 목록 (품질 높은 순)
+    static let availableWhisperModels: [ModelInfo] = [
+        whisperLargeV3,
+        whisperLargeV3Turbo,
+    ]
+
     // LLM 모델 정보는 LocalModelSpec에서 관리 (Single Source of Truth)
 }
 

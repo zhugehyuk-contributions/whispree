@@ -30,6 +30,9 @@ struct AppSettings: Codable {
     /// 스크린샷을 대상 앱에 이미지로 자동 붙여넣기
     var isScreenshotPasteEnabled: Bool = true
 
+    /// 실시간 스트리밍 STT (WhisperKit 전용)
+    var isStreamingEnabled: Bool = false
+
     /// Groq API
     var groqApiKey: String = ""
 

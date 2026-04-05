@@ -32,21 +32,30 @@ struct ModelSettingsView: View {
                         .foregroundStyle(.secondary)
 
                     VStack(spacing: 12) {
-                        let whisperCompat = ModelCompatibility.evaluate(modelSizeBytes: 1_500_000_000)
-                        DownloadableModelRow(
-                            name: "WhisperKit Large V3 Turbo",
-                            description: "로컬 CoreML+ANE, 99개 언어",
-                            metrics: .local(
-                                size: "~1.5 GB",
-                                ramPercent: whisperCompat.ramUsagePercent,
-                                tokPerSec: nil,
-                                qualityScore: 75,
-                                grade: whisperCompat.grade
-                            ),
-                            state: modelManager.whisperKitDownloaded ? .ready : activeWhisperKitState,
-                            onDownload: { Task { await modelManager.downloadWhisperKitModel() } },
-                            onDelete: { modelManager.deleteWhisperModel() }
-                        )
+                        ForEach(ModelInfo.availableWhisperModels) { model in
+                            let compat = ModelCompatibility.evaluate(modelSizeBytes: model.sizeBytes)
+                            let isCurrentModel = appState.settings.whisperModelId == model.id
+                            let isCached = modelManager.whisperModelCacheStates[model.id] ?? false
+                            let state: ModelState = {
+                                if isCached { return .ready }
+                                if isCurrentModel { return activeWhisperKitState }
+                                return .notDownloaded
+                            }()
+                            DownloadableModelRow(
+                                name: model.name + (isCurrentModel ? " ✦" : ""),
+                                description: model.description,
+                                metrics: .local(
+                                    size: model.sizeDescription,
+                                    ramPercent: compat.ramUsagePercent,
+                                    tokPerSec: nil,
+                                    qualityScore: model.id == "openai_whisper-large-v3" ? 95 : 75,
+                                    grade: compat.grade
+                                ),
+                                state: state,
+                                onDownload: { Task { await modelManager.downloadWhisperKitModel(modelId: model.id) } },
+                                onDelete: { modelManager.deleteWhisperModel(modelId: model.id) }
+                            )
+                        }
 
                         let mlxCompat = ModelCompatibility.evaluate(modelSizeBytes: 1_000_000_000)
                         DownloadableModelRow(

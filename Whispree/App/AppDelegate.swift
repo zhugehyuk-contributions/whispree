@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeScreen: NSScreen?
     private var quickFixPanel: NSPanel?
     private var cancellables = Set<AnyCancellable>()
+    private let overlayWidth: CGFloat = 320
+    private let collapsedOverlayHeight: CGFloat = 112
+    private let expandedOverlayHeight: CGFloat = 176
 
     // Services
     private(set) var audioService: AudioService!
@@ -30,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Coordinators
     private(set) var recordingCoordinator: RecordingCoordinator!
 
+    private var accessibilityTimer: Timer?
+    private var lastAccessibilityTrust: Bool?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupEditKeyboardShortcuts()
@@ -37,6 +43,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupOverlayObserver()
         checkFirstLaunch()
+        startAccessibilityMonitor()
+    }
+
+    // MARK: - Accessibility Permission Monitor
+
+    /// 접근성 권한이 변경되면 앱을 자동 재시작
+    private func startAccessibilityMonitor() {
+        lastAccessibilityTrust = AXIsProcessTrusted()
+        accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let isGranted = AXIsProcessTrusted()
+            let wasGranted = self.lastAccessibilityTrust ?? isGranted
+            self.lastAccessibilityTrust = isGranted
+
+            // 권한이 꺼졌다가 다시 켜졌을 때만 1회 재시작
+            if !wasGranted, isGranted {
+                StreamLog.write("AX permission false->true, restarting")
+                self.accessibilityTimer?.invalidate()
+                self.accessibilityTimer = nil
+                self.restartApp()
+            }
+        }
+    }
+
+    private func restartApp() {
+        let url = Bundle.main.bundleURL
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", url.path]
+        try? task.run()
+        NSApplication.shared.terminate(nil)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -140,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyManager.onRecordingToggle = { [weak self] shouldRecord in
             guard let self else { return }
+            StreamLog.write("onRecordingToggle: shouldRecord=\(shouldRecord)")
             if shouldRecord {
                 recordingCoordinator.startRecording()
             } else {
@@ -358,18 +396,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
+
+        appState.$partialText
+            .combineLatest(appState.$transcriptionState)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] partialText, state in
+                self?.updateOverlayFrame(for: state, partialText: partialText)
+            }
+            .store(in: &cancellables)
     }
 
     private func showOverlay() {
         guard appState.settings.showOverlay else { return }
 
         if overlayPanel != nil {
+            updateOverlayFrame(for: appState.transcriptionState, partialText: appState.partialText)
             overlayPanel?.orderFront(nil)
             return
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            contentRect: NSRect(x: 0, y: 0, width: overlayWidth, height: collapsedOverlayHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -384,10 +431,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 활성 화면 캡처 — 이후 선택/미리보기 패널도 이 화면에 표시
         let screen = NSScreen.main ?? NSScreen.screens[0]
         activeScreen = screen
-        // midX/midY로 글로벌 좌표 기준 중앙 배치 (멀티 디스플레이 대응)
-        let x = screen.frame.midX - 160
-        let y = screen.visibleFrame.maxY - 100
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
 
         panel.contentView = NSHostingView(
             rootView: TranscriptionOverlayView()
@@ -395,6 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.orderFront(nil)
         overlayPanel = panel
+        updateOverlayFrame(for: appState.transcriptionState, partialText: appState.partialText)
     }
 
     private func hideOverlay() {
@@ -407,6 +451,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if shouldRestore {
             frontApp?.activate()
         }
+    }
+
+    private func updateOverlayFrame(for state: TranscriptionState, partialText: String) {
+        guard let overlayPanel else { return }
+        let height = overlayHeight(for: state, partialText: partialText)
+        let screen = activeScreen ?? NSScreen.main ?? NSScreen.screens[0]
+        let x = screen.frame.midX - overlayWidth / 2
+        let y = screen.visibleFrame.maxY - height - 20
+        overlayPanel.setFrame(NSRect(x: x, y: y, width: overlayWidth, height: height), display: true)
+    }
+
+    private func overlayHeight(for state: TranscriptionState, partialText: String) -> CGFloat {
+        let hasStreamingText = state == .recording
+            && !partialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasStreamingText ? expandedOverlayHeight : collapsedOverlayHeight
     }
 
     // MARK: - Screenshot Selection Panel

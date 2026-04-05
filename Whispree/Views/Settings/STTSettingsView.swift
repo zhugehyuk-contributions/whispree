@@ -50,15 +50,16 @@ struct STTSettingsView: View {
                         )
 
                         // WhisperKit
-                        let whisperCompat = ModelCompatibility.evaluate(modelSizeBytes: 1_500_000_000)
+                        let selectedWhisper = ModelInfo.availableWhisperModels.first(where: { $0.id == appState.settings.whisperModelId }) ?? .whisperLargeV3Turbo
+                        let whisperCompat = ModelCompatibility.evaluate(modelSizeBytes: selectedWhisper.sizeBytes)
                         STTProviderRow(
                             title: "WhisperKit",
                             description: "로컬 CoreML+ANE, 99개 언어",
                             metrics: .local(
-                                size: "~1.5 GB",
+                                size: selectedWhisper.sizeDescription,
                                 ramPercent: whisperCompat.ramUsagePercent,
                                 tokPerSec: nil,
-                                qualityScore: 75,
+                                qualityScore: selectedWhisper.id == "openai_whisper-large-v3" ? 95 : 75,
                                 grade: whisperCompat.grade
                             ),
                             isSelected: appState.settings.sttProviderType == .whisperKit,
@@ -77,6 +78,92 @@ struct STTSettingsView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(.quaternary.opacity(0.5))
                 )
+
+                // WhisperKit Model Selection
+                if appState.settings.sttProviderType == .whisperKit {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("WhisperKit 모델")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+
+                        ForEach(ModelInfo.availableWhisperModels) { model in
+                            Button(action: {
+                                guard appState.settings.whisperModelId != model.id else { return }
+                                appState.settings.whisperModelId = model.id
+                                appState.settings.save()
+                                Task { await appState.switchSTTProvider(to: .whisperKit) }
+                            }) {
+                                HStack(spacing: 10) {
+                                    Image(systemName: appState.settings.whisperModelId == model.id ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(appState.settings.whisperModelId == model.id ? .blue : .secondary)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack {
+                                            Text(model.name).font(.subheadline).fontWeight(.medium)
+                                            if model.id == "openai_whisper-large-v3" {
+                                                Text("최고 품질")
+                                                    .font(.caption2).fontWeight(.semibold)
+                                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                                    .background(Capsule().fill(.blue.opacity(0.15)))
+                                                    .foregroundStyle(.blue)
+                                            }
+                                        }
+                                        Text("\(model.description) (\(model.sizeDescription))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Spacer()
+                                }
+                                .padding(8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(appState.settings.whisperModelId == model.id ? .blue.opacity(0.08) : .clear)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if appState.settings.whisperModelId == "openai_whisper-large-v3" {
+                            Label("Large V3는 Turbo 대비 2배 크고 느리지만 정확도가 높습니다", systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.quaternary.opacity(0.5))
+                    )
+                }
+
+                // Streaming Mode Toggle (WhisperKit only)
+                if appState.settings.sttProviderType == .whisperKit {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(isOn: Binding(
+                            get: { appState.settings.isStreamingEnabled },
+                            set: {
+                                appState.settings.isStreamingEnabled = $0
+                                appState.settings.save()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("실시간 스트리밍")
+                                    .font(.subheadline).fontWeight(.medium)
+                                Text("녹음 중 실시간으로 텍스트를 표시하고, 종료 시 교정된 텍스트를 삽입합니다")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.quaternary.opacity(0.5))
+                    )
+                }
 
                 // Groq API Key Section
                 if appState.settings.sttProviderType == .groq {

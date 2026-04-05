@@ -24,5 +24,10 @@
 	<string>https://arsture.github.io/whispree/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>s44fNNpNBumMWbemL71UC323Ke9lgOL90FIqX/ArQFY=</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

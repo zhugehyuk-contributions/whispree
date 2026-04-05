@@ -62,6 +62,13 @@ final class AppState: ObservableObject {
         sttProvider?.isReady ?? false
     }
 
+    /// 스트리밍 모드 활성 여부 (스트리밍 토글 ON + 활성 provider가 WhisperKit)
+    var isStreamingMode: Bool {
+        settings.isStreamingEnabled
+            && settings.sttProviderType == .whisperKit
+            && sttProvider is WhisperKitProvider
+    }
+
     init() {
         // authService/oauthService의 @Published 변경을 AppState로 전파
         // (SwiftUI가 중첩 ObservableObject 변경을 자동 감지하지 않으므로)
@@ -82,12 +89,19 @@ final class AppState: ObservableObject {
         // 전환 시작 시 이전 에러 클리어
         whisperModelState = .loading
 
+        // 스트리밍 중이면 먼저 정리
+        await sttProvider?.stopStreaming()
         // 이전 provider teardown (에러 무시 — 전환 중 teardown 실패는 예상된 동작)
         await sttProvider?.teardown()
+        transcriptionState = .idle
+        isRecording = false
+        partialText = ""
+        finalText = ""
+        correctedText = ""
 
         switch type {
             case .whisperKit:
-                sttProvider = WhisperKitProvider()
+                sttProvider = WhisperKitProvider(modelId: settings.whisperModelId)
             case .groq:
                 sttProvider = GroqSTTProvider(apiKey: settings.groqApiKey)
             case .mlxAudio:

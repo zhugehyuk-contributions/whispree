@@ -3,6 +3,9 @@ import SwiftUI
 
 struct TranscriptionOverlayView: View {
     @EnvironmentObject var appState: AppState
+    private var streamingText: String {
+        appState.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -21,6 +24,23 @@ struct TranscriptionOverlayView: View {
             NeonWaveformView()
                 .frame(height: 40)
                 .opacity(appState.isRecording ? 1 : 0.3)
+
+            // 스트리밍 모드: 실시간 텍스트 표시
+            if appState.transcriptionState == .recording, !streamingText.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(streamingText)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id("streamingText")
+                    }
+                    .frame(height: 72)
+                    .onChange(of: appState.partialText) { _ in
+                        proxy.scrollTo("streamingText", anchor: .bottom)
+                    }
+                }
+            }
 
             if appState.isRecording {
                 HStack(spacing: 12) {

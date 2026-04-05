@@ -169,6 +169,14 @@ final class AudioService: ObservableObject {
         return bands
     }
 
+    /// 녹음 중 현재까지 누적된 오디오 버퍼의 스냅샷을 반환 (녹음 계속 유지)
+    func getCurrentBuffer() -> [Float] {
+        bufferLock.lock()
+        let buffer = audioBuffer
+        bufferLock.unlock()
+        return buffer
+    }
+
     func stopRecording() -> [Float] {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
