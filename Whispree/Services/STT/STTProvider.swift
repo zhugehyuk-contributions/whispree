@@ -21,12 +21,45 @@ protocol STTProvider: AnyObject, Sendable {
         language: SupportedLanguage?,
         promptTokens: [Int]?
     ) -> AsyncStream<PartialTranscription>
+
+    // MARK: - Live Streaming
+
+    var isStreaming: Bool { get }
+
+    /// `confirmedText`는 새로 확정된 텍스트이며, provisional update에서는 빈 문자열이다.
+    /// `fullText`는 현재까지 조립된 전체 스트리밍 텍스트다.
+    func startStreaming(
+        language: SupportedLanguage?,
+        onSegmentConfirmed: @escaping @MainActor @Sendable (String, String) -> Void,
+        onError: @escaping @MainActor @Sendable (Error) -> Void
+    ) async throws
+
+    func stopStreaming() async
+
+    func getAccumulatedText() -> String
 }
 
 extension STTProvider {
     var isReady: Bool {
         validate().isValid
     }
+
+    // MARK: - Live Streaming (default: unsupported)
+
+    /// 라이브 마이크 스트리밍 전사 (WhisperKit 전용)
+    var isStreaming: Bool { false }
+
+    func startStreaming(
+        language: SupportedLanguage?,
+        onSegmentConfirmed: @escaping @MainActor @Sendable (String, String) -> Void,
+        onError: @escaping @MainActor @Sendable (Error) -> Void
+    ) async throws {
+        throw STTError.streamingNotSupported
+    }
+
+    func stopStreaming() async {}
+
+    func getAccumulatedText() -> String { "" }
 }
 
 struct TranscriptionResult {

@@ -54,7 +54,8 @@ targets:
         INFOPLIST_FILE: Whispree/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Whispree/Resources/Whispree.entitlements
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: DRDT2F8525
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_IDENTITY: "-"
         ENABLE_HARDENED_RUNTIME: "YES"
         COMBINE_HIDPI_IMAGES: "YES"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

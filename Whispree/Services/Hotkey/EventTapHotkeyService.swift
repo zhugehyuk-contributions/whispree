@@ -155,6 +155,7 @@ final class EventTapHotkeyService {
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let eventMods = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
             .intersection(relevantModifiers)
+        let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
         // -- Recording mode --
         if isRecording {
@@ -211,6 +212,9 @@ final class EventTapHotkeyService {
         for binding in bindings {
             if keyCode == binding.keyCode, eventMods == binding.modifiers {
                 if type == .keyDown {
+                    if isAutoRepeat {
+                        return nil
+                    }
                     DispatchQueue.main.async { binding.onKeyDown() }
                 } else if type == .keyUp {
                     DispatchQueue.main.async { binding.onKeyUp?() }

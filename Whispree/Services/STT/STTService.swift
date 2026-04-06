@@ -89,12 +89,14 @@ enum STTError: LocalizedError {
     case modelNotLoaded
     case transcriptionFailed(String)
     case emptyAudio
+    case streamingNotSupported
 
     var errorDescription: String? {
         switch self {
             case .modelNotLoaded: "STT model is not loaded"
             case let .transcriptionFailed(msg): "Transcription failed: \(msg)"
             case .emptyAudio: "No audio was recorded"
+            case .streamingNotSupported: "This STT provider does not support streaming"
         }
     }
 }
