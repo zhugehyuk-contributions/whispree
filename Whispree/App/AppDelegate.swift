@@ -18,9 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeScreen: NSScreen?
     private var quickFixPanel: NSPanel?
     private var cancellables = Set<AnyCancellable>()
-    private let overlayWidth: CGFloat = 320
-    private let collapsedOverlayHeight: CGFloat = 112
-    private let expandedOverlayHeight: CGFloat = 176
+    private let overlayWidth: CGFloat = 420
+    private let collapsedOverlayHeight: CGFloat = 44
+    private let expandedOverlayHeight: CGFloat = 340
 
     // Services
     private(set) var audioService: AudioService!

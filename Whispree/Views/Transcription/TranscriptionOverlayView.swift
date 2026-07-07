@@ -3,82 +3,171 @@ import SwiftUI
 
 struct TranscriptionOverlayView: View {
     @EnvironmentObject var appState: AppState
+    @State private var fontSize: CGFloat = 16
+    @State private var recordingStartTime: Date?
+    @State private var elapsedSeconds: Int = 0
+    private let elapsedTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     private var streamingText: String {
         appState.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(spacing: 0) {
+            // MARK: - 상단 바: 상태 + 파형 + 시간/글자수
+            HStack(spacing: 8) {
                 statusIcon
+                if appState.isRecording {
+                    NeonWaveformView()
+                        .frame(width: 60, height: 16)
+                        .opacity(0.85)
+                }
                 Text(appState.transcriptionState.displayText)
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
+
                 Spacer(minLength: 0)
+
+                if appState.isRecording {
+                    // 녹음 경과 시간
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 6, height: 6)
+                        Text(formatTime(elapsedSeconds))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if appState.transcriptionState == .transcribing || appState.transcriptionState == .correcting {
                     ProgressView()
-                        .scaleEffect(0.6)
-                        .frame(width: 16, height: 16)
+                        .scaleEffect(0.5)
+                        .frame(width: 14, height: 14)
                 }
             }
-            NeonWaveformView()
-                .frame(height: 40)
-                .opacity(appState.isRecording ? 1 : 0.3)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
 
-            // 스트리밍 모드: 실시간 텍스트 표시
+            // MARK: - 스트리밍 텍스트 영역
             if appState.transcriptionState == .recording, !streamingText.isEmpty {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(streamingText)
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id("streamingText")
-                    }
-                    .frame(height: 72)
-                    .onChange(of: appState.partialText) { _ in
-                        proxy.scrollTo("streamingText", anchor: .bottom)
-                    }
-                }
-            }
+                Divider().opacity(0.3)
 
-            if appState.isRecording {
-                HStack(spacing: 12) {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        Text(streamingText)
+                            .font(.system(size: fontSize, weight: .regular))
+                            .foregroundStyle(.primary)
+                            .lineSpacing(5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .id("bottom")
+                    }
+                    .frame(minHeight: 60, maxHeight: 260)
+                    .onChange(of: appState.partialText) { _ in
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+
+                Divider().opacity(0.3)
+
+                // MARK: - 하단 바: 글자수 + 폰트 조절 + 단축키
+                HStack(spacing: 6) {
+                    // 글자 수
+                    Text("\(streamingText.count)자")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+
                     Spacer()
-                    HStack(spacing: 4) {
-                        Text("Stop")
+
+                    // 폰트 크기 조절
+                    Button { fontSize = max(12, fontSize - 2) } label: {
+                        Image(systemName: "textformat.size.smaller")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Text(shortcutLabel)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.quaternary.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
-                    HStack(spacing: 4) {
-                        Text("Cancel")
+                    .buttonStyle(.plain)
+
+                    Text("\(Int(fontSize))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 20)
+
+                    Button { fontSize = min(28, fontSize + 2) } label: {
+                        Image(systemName: "textformat.size.larger")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Text("esc")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.quaternary.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    // 단축키 힌트
+                    shortcutHint("Stop", key: shortcutLabel)
+                    shortcutHint("Cancel", key: "esc")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+            } else if !appState.isRecording, appState.transcriptionState != .idle {
+                // 배치 모드: 처리 중 파형
+                NeonWaveformView()
+                    .frame(height: 40)
+                    .opacity(0.3)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            } else if appState.isRecording {
+                // 녹음 중이지만 아직 텍스트 없음 — 대기 표시
+                HStack(spacing: 8) {
+                    Spacer()
+                    shortcutHint("Stop", key: shortcutLabel)
+                    shortcutHint("Cancel", key: "esc")
                     Spacer()
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
             }
         }
-        .frame(width: 280)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(width: 400)
         .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+        .onReceive(elapsedTimer) { _ in
+            if appState.isRecording {
+                if recordingStartTime == nil {
+                    recordingStartTime = Date()
+                }
+                elapsedSeconds = Int(Date().timeIntervalSince(recordingStartTime ?? Date()))
+            } else {
+                recordingStartTime = nil
+                elapsedSeconds = 0
+            }
+        }
+    }
+
+    // MARK: - Components
+
+    private func shortcutHint(_ label: String, key: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+            Text(key)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 1)
+                .background(.quaternary.opacity(0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+        }
+    }
+
+    private func formatTime(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
+        return String(format: "%d:%02d", m, s)
     }
 
     private var shortcutLabel: String {
@@ -112,7 +201,7 @@ struct TranscriptionOverlayView: View {
                         .foregroundStyle(.secondary)
             }
         }
-        .font(.caption)
+        .font(.system(size: 12))
     }
 }
 
@@ -180,11 +269,8 @@ struct NeonWaveformView: View {
             let rms = appState.currentAudioLevel
 
             for i in 0 ..< bandCount {
-                // 중앙 접기: 저주파→중앙, 고주파→가장자리 (좌우 다른 밴드)
                 let fftIdx = min(barToFFT[i], max(bands.count - 1, 0))
                 let fftVal: Float = bands.isEmpty ? 0 : bands[fftIdx]
-
-                // FFT가 형태를 결정, RMS가 전체 에너지 스케일링
                 let target = fftVal * (0.6 + rms * 1.4)
 
                 let current = smoothed[i]

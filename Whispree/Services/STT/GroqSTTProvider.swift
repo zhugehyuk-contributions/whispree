@@ -27,7 +27,8 @@ final class GroqSTTProvider: STTProvider, @unchecked Sendable {
     func transcribe(
         audioBuffer: [Float],
         language: SupportedLanguage?,
-        promptTokens: [Int]?
+        promptTokens: [Int]?,
+        clipStartTime: Float? = nil
     ) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw STTError.modelNotLoaded }
 

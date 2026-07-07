@@ -23,6 +23,9 @@ final class RecordingCoordinator: ObservableObject {
     private var correctionGeneration: UInt64 = 0
     /// 녹음 시작 시 캡처된 모드 — 세션 중 설정 변경에 안전
     private var isCurrentSessionStreaming: Bool = false
+    /// 증분 전사에서 확정된 세그먼트 목록
+    private var streamingFinalizedSegments: [FinalizedSegment] = []
+    private var streamingLastFinalizedEndTime: Float = 0
 
     init(
         appState: AppState,
@@ -126,6 +129,8 @@ final class RecordingCoordinator: ObservableObject {
             appState.partialText = ""
             appState.finalText = ""
             appState.correctedText = ""
+            streamingFinalizedSegments = []
+            streamingLastFinalizedEndTime = 0
 
             streamingTask = Task { [weak self] in
                 guard let self else { return }
@@ -197,60 +202,190 @@ final class RecordingCoordinator: ObservableObject {
         appState.partialText = ""
         appState.finalText = ""
         appState.correctedText = ""
+        streamingFinalizedSegments = []
+        streamingLastFinalizedEndTime = 0
     }
 
     // MARK: - Streaming Pipeline (Manual Transcribe Loop)
 
-    /// AudioService로 녹음하면서 주기적으로 transcribe() 호출.
-    /// AudioStreamTranscriber 대신 배치와 동일한 코드 경로를 사용하여 turbo 모델 호환.
+    /// 증분 스트리밍 전사 루프.
+    /// clipTimestamps로 마지막 확정 지점 이후만 전사. 안정된 세그먼트를 finalize하여 재처리 방지.
     @MainActor
     private func streamingTranscribeLoop(sttProvider: any STTProvider) async {
         let minBufferSamples = Int(2.0 * 16_000)  // 최소 2초
         let pollInterval: UInt64 = 1_500_000_000   // 1.5초 간격
+        let sampleRate: Float = 16_000
+        let finalizeAge: Float = 8.0  // 8초 이상 지난 텍스트 확정 대상
+
+        var localFinalized: [FinalizedSegment] = []
+        var lastFinalizedEndTime: Float = 0
+        var lastPendingText = ""
+        var stableCount = 0
         var lastTranscribedSize = 0
-        var previousText = ""
 
         while !Task.isCancelled && appState.isRecording {
-            // 폴링 대기
             try? await Task.sleep(nanoseconds: pollInterval)
             guard !Task.isCancelled && appState.isRecording else { break }
 
             let buffer = audioService.getCurrentBuffer()
-
-            // 최소 버퍼 크기 미달 → 대기
             guard buffer.count >= minBufferSamples else { continue }
 
-            // 새 오디오가 0.5초 미만이면 스킵 (중복 transcribe 방지)
             let newSamples = buffer.count - lastTranscribedSize
-            guard newSamples >= Int(0.5 * 16_000) else { continue }
+            guard newSamples >= Int(0.5 * sampleRate) else { continue }
+
+            // 무음 감지: 새 오디오의 RMS 에너지가 임계값 미만이면 스킵
+            // WhisperKit turbo는 무음에서 "감사합니다" 등 YouTube 인삿말 환각 생성
+            let newAudioStart = max(0, buffer.count - newSamples)
+            let newAudio = Array(buffer[newAudioStart...])
+            let rms = sqrtf(newAudio.map { $0 * $0 }.reduce(0, +) / Float(max(newAudio.count, 1)))
+            guard rms > 0.008 else { continue }
 
             lastTranscribedSize = buffer.count
 
+            let currentAudioTime = Float(buffer.count) / sampleRate
+
             do {
+                // clipStartTime으로 확정 지점 이후만 전사
                 let result = try await sttProvider.transcribe(
                     audioBuffer: buffer,
                     language: appState.settings.language == .auto ? nil : appState.settings.language,
-                    promptTokens: nil  // WhisperKitProvider 내부에서 domainWordSets로 빌드
+                    promptTokens: nil,
+                    clipStartTime: lastFinalizedEndTime > 0 ? lastFinalizedEndTime : nil
                 )
 
                 guard !Task.isCancelled && appState.isRecording else { break }
 
-                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
+                var pendingText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !pendingText.isEmpty else { continue }
 
-                // 오버레이 업데이트
-                appState.partialText = text
+                // WhisperKit 환각 필터: 무음에서 생성되는 YouTube 인삿말 패턴
+                let hallucinationPatterns = [
+                    "감사합니다", "구독", "좋아요", "시청해", "다음 영상",
+                    "채널", "알림", "구독과", "Thank you", "subscribe",
+                    "MBC 뉴스", "KBS 뉴스", "SBS"
+                ]
+                let isLikelyHallucination = hallucinationPatterns.contains { pendingText.contains($0) }
+                    && rms < 0.015  // 에너지가 낮을 때만 필터 (실제 말했으면 통과)
+                if isLikelyHallucination { continue }
 
-                // 텍스트가 변경되었으면 LLM 교정 트리거
-                if text != previousText {
-                    previousText = text
-                    appState.finalText = text
-                    triggerStreamingCorrection(confirmedText: text)
+                // 안정성 체크: 텍스트가 2회 연속 동일하면 확정 가능
+                if pendingText == lastPendingText {
+                    stableCount += 1
+                } else {
+                    stableCount = 0
+                    lastPendingText = pendingText
                 }
+
+                // 확정 판단: 오래된 텍스트 + 안정(2회 연속 동일)
+                let cutoffTime = currentAudioTime - finalizeAge
+                if stableCount >= 1, cutoffTime > lastFinalizedEndTime, !result.segments.isEmpty {
+                    // 확정 대상 세그먼트 찾기: endTime <= cutoffTime
+                    var segmentsToFinalize: [TranscriptionSegment] = []
+                    var newEndTime = lastFinalizedEndTime
+                    for seg in result.segments {
+                        if let end = seg.end, end <= cutoffTime {
+                            segmentsToFinalize.append(seg)
+                            newEndTime = max(newEndTime, end)
+                        }
+                    }
+
+                    if !segmentsToFinalize.isEmpty {
+                        let finalizedText = segmentsToFinalize
+                            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .joined(separator: " ")
+                        let segment = FinalizedSegment(
+                            text: finalizedText,
+                            correctedText: nil,
+                            startTime: lastFinalizedEndTime,
+                            endTime: newEndTime
+                        )
+                        localFinalized.append(segment)
+                        lastFinalizedEndTime = newEndTime
+                        stableCount = 0
+
+                        // 확정 세그먼트 LLM 교정 (비동기)
+                        let segIdx = localFinalized.count - 1
+                        triggerSegmentCorrection(
+                            segmentIndex: segIdx,
+                            text: finalizedText,
+                            localFinalized: &localFinalized
+                        )
+                    }
+                }
+
+                // 화면 표시: 확정 텍스트 + 미확정 텍스트
+                let finalizedDisplay = localFinalized.map(\.displayText).joined(separator: " ")
+                let displayText = [finalizedDisplay, pendingText]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+
+                appState.partialText = displayText
+                appState.finalText = displayText
+
             } catch {
-                // transcribe 실패는 비치명적 — 다음 시도에서 재시도
                 StreamLog.write("streamingTranscribeLoop error: \(error)")
             }
+        }
+
+        // 루프 종료 시 로컬 상태를 appState에 반영
+        streamingFinalizedSegments = localFinalized
+        streamingLastFinalizedEndTime = lastFinalizedEndTime
+    }
+
+    /// 개별 확정 세그먼트의 LLM 교정 (비동기)
+    @MainActor
+    private func triggerSegmentCorrection(
+        segmentIndex: Int,
+        text: String,
+        localFinalized: inout [FinalizedSegment]
+    ) {
+        guard let llmProvider = appState.llmProvider,
+              appState.settings.isLLMEnabled,
+              !(llmProvider is NoneProvider)
+        else { return }
+
+        let settings = appState.settings
+        // 교정은 fire-and-forget — 완료 시 세그먼트 업데이트
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var systemPrompt: String = switch settings.correctionMode {
+                case .custom:
+                    settings.customLLMPrompt ?? CorrectionPrompts.codeSwitchPrompt
+                case .standard, .fillerRemoval, .structured:
+                    CorrectionPrompts.prompt(for: settings.correctionMode, language: settings.language)
+            }
+
+            let corrections = settings.domainWordSets.filter(\.isEnabled).flatMap(\.corrections)
+            if !corrections.isEmpty {
+                let mappingText = corrections.map { "\($0.from) → \($0.to)" }.joined(separator: "\n")
+                systemPrompt += "\n\n교정 매핑 (왼쪽 표현이 텍스트에 있으면 오른쪽으로 교정):\n" + mappingText
+            }
+
+            let glossary = settings.domainWordSets.filter(\.isEnabled).flatMap(\.words)
+
+            if let corrected = try? await llmProvider.correct(
+                text: text,
+                systemPrompt: systemPrompt,
+                glossary: glossary.isEmpty ? nil : glossary,
+                screenshots: []
+            ) {
+                // 교정 결과 반영 — partialText 재조립
+                if segmentIndex < self.streamingFinalizedSegments.count {
+                    self.streamingFinalizedSegments[segmentIndex].correctedText = corrected
+                    self.rebuildStreamingDisplayText()
+                }
+            }
+        }
+    }
+
+    /// 확정 세그먼트 + 현재 미확정 텍스트로 화면 재조립
+    @MainActor
+    private func rebuildStreamingDisplayText() {
+        let finalizedDisplay = streamingFinalizedSegments.map(\.displayText).joined(separator: " ")
+        let pending = appState.partialText  // 현재 표시 중인 텍스트에서 마지막 부분 유지
+        // finalText에만 반영 (partialText는 루프에서 관리)
+        if !finalizedDisplay.isEmpty {
+            appState.finalText = finalizedDisplay
         }
     }
 
@@ -314,62 +449,22 @@ final class RecordingCoordinator: ObservableObject {
         streamingCorrectionTask = nil
         appState.isRecording = false  // streamingTranscribeLoop의 while 조건 탈출
 
-        // AudioService 녹음 중지 (스트리밍 루프가 AudioService를 사용)
+        // AudioService 녹음 중지
         _ = audioService.stopRecording()
 
+        // 스트리밍 루프를 cancel로 즉시 중단 (1.5초 sleep 대기 방지)
+        streamingTask?.cancel()
         let activeStreamingTask = streamingTask
 
         currentTask = Task { [weak self] in
             guard let self else { return }
 
-            // 스트리밍 루프 완료 대기
             await activeStreamingTask?.value
             streamingTask = nil
 
-            let rawText = appState.finalText
-            guard !rawText.isEmpty else {
-                appState.transcriptionState = .idle
-                appState.partialText = ""
-                return
-            }
-
-            // 최종 LLM 교정 1회 (interim 교정과 동일한 프롬프트/매핑)
-            if let llmProvider = appState.llmProvider,
-               appState.settings.isLLMEnabled,
-               !(llmProvider is NoneProvider)
-            {
-                appState.transcriptionState = .correcting
-
-                var systemPrompt: String = switch appState.settings.correctionMode {
-                    case .custom:
-                        appState.settings.customLLMPrompt ?? CorrectionPrompts.codeSwitchPrompt
-                    case .standard, .fillerRemoval, .structured:
-                        CorrectionPrompts.prompt(
-                            for: appState.settings.correctionMode,
-                            language: appState.settings.language
-                        )
-                }
-
-                let corrections = appState.settings.domainWordSets.filter(\.isEnabled).flatMap(\.corrections)
-                if !corrections.isEmpty {
-                    let mappingText = corrections.map { "\($0.from) → \($0.to)" }.joined(separator: "\n")
-                    systemPrompt += "\n\n교정 매핑 (왼쪽 표현이 텍스트에 있으면 오른쪽으로 교정):\n" + mappingText
-                }
-
-                let glossary = appState.settings.domainWordSets.filter(\.isEnabled).flatMap(\.words)
-
-                if let corrected = try? await llmProvider.correct(
-                    text: rawText, systemPrompt: systemPrompt,
-                    glossary: glossary.isEmpty ? nil : glossary,
-                    screenshots: []
-                ) {
-                    guard !Task.isCancelled else { return }
-                    appState.correctedText = corrected
-                }
-            }
-
-            // 대상 앱에 최종 텍스트 1회 삽입
-            let textToInsert = appState.correctedText.isEmpty ? rawText : appState.correctedText
+            // 최종 텍스트: 이미 화면에 표시 중인 텍스트를 그대로 사용 (재전사/재교정 없음)
+            let textToInsert = appState.finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawText = textToInsert
             if appState.settings.hasCompletedOnboarding {
                 appState.transcriptionState = .inserting
                 let success = await textInsertionService.insertText(textToInsert, targetApp: previousApp)
@@ -380,16 +475,16 @@ final class RecordingCoordinator: ObservableObject {
             }
 
             // 히스토리 기록
-            appState.addToHistory(
-                original: rawText,
-                corrected: appState.correctedText.isEmpty ? nil : appState.correctedText
-            )
+            let correctedFull = textToInsert != rawText ? textToInsert : nil
+            appState.addToHistory(original: rawText, corrected: correctedFull)
 
             // 초기화
             appState.transcriptionState = .idle
             appState.partialText = ""
             appState.finalText = ""
             appState.correctedText = ""
+            streamingFinalizedSegments = []
+            streamingLastFinalizedEndTime = 0
         }
     }
 
@@ -445,7 +540,8 @@ final class RecordingCoordinator: ObservableObject {
             let result = try await sttProvider.transcribe(
                 audioBuffer: audioBuffer,
                 language: appState.settings.language == .auto ? nil : appState.settings.language,
-                promptTokens: nil
+                promptTokens: nil,
+                clipStartTime: nil
             )
 
             guard !Task.isCancelled else { return }

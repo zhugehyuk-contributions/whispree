@@ -149,7 +149,8 @@ final class MLXAudioProvider: STTProvider, @unchecked Sendable {
     func transcribe(
         audioBuffer: [Float],
         language: SupportedLanguage?,
-        promptTokens: [Int]?
+        promptTokens: [Int]?,
+        clipStartTime: Float? = nil
     ) async throws -> TranscriptionResult {
         guard _isReady else { throw STTError.modelNotLoaded }
 
@@ -172,7 +173,7 @@ final class MLXAudioProvider: STTProvider, @unchecked Sendable {
         let text = response["text"] as? String ?? ""
         return TranscriptionResult(
             text: text,
-            segments: [TranscriptionSegment(text: text, language: language?.rawValue, words: nil)],
+            segments: [TranscriptionSegment(text: text, language: language?.rawValue, words: nil, start: nil, end: nil)],
             language: language?.rawValue
         )
     }

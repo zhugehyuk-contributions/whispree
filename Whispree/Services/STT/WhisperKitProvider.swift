@@ -53,7 +53,8 @@ final class WhisperKitProvider: STTProvider, @unchecked Sendable {
     func transcribe(
         audioBuffer: [Float],
         language: SupportedLanguage?,
-        promptTokens: [Int]?
+        promptTokens: [Int]?,
+        clipStartTime: Float? = nil
     ) async throws -> TranscriptionResult {
         guard let whisperKit else { throw STTError.modelNotLoaded }
 
@@ -64,8 +65,13 @@ final class WhisperKitProvider: STTProvider, @unchecked Sendable {
             language: langCode,
             detectLanguage: langCode == nil,
             wordTimestamps: true,
-            noSpeechThreshold: 0.5
+            noSpeechThreshold: 0.3
         )
+
+        // 스트리밍 증분 전사: 지정 시점부터만 디코딩
+        if let clipStartTime {
+            options.clipTimestamps = [clipStartTime]
+        }
 
         // promptTokens 주입: 외부 전달 또는 domainWordSets에서 빌드
         if let promptTokens, !promptTokens.isEmpty {
@@ -96,7 +102,9 @@ final class WhisperKitProvider: STTProvider, @unchecked Sendable {
                 language: result.language,
                 words: result.allWords.map { w in
                     WordInfo(word: w.word, start: Double(w.start), end: Double(w.end))
-                }
+                },
+                start: result.segments.first?.start,
+                end: result.segments.last?.end
             )
         }
 

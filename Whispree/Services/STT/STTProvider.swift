@@ -13,7 +13,8 @@ protocol STTProvider: AnyObject, Sendable {
     func transcribe(
         audioBuffer: [Float],
         language: SupportedLanguage?,
-        promptTokens: [Int]?
+        promptTokens: [Int]?,
+        clipStartTime: Float?
     ) async throws -> TranscriptionResult
 
     func transcribeStream(
@@ -72,6 +73,17 @@ struct TranscriptionSegment {
     let text: String
     let language: String?
     let words: [WordInfo]?
+    let start: Float?
+    let end: Float?
+}
+
+/// 스트리밍 전사에서 확정된 세그먼트 — 더 이상 재전사/재교정하지 않음
+struct FinalizedSegment {
+    let text: String
+    var correctedText: String?
+    let startTime: Float
+    let endTime: Float
+    var displayText: String { correctedText ?? text }
 }
 
 struct WordInfo {
